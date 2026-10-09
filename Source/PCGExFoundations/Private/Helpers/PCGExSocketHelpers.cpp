@@ -71,7 +71,12 @@ namespace PCGExStaging
 			Idx = *IdxPtr;
 		}
 
-		FPlatformAtomics::InterlockedIncrement(&SocketInfosList[Idx].Count);
+		{
+			// SocketInfosList may be reallocated by another thread's NewSocketInfos (under the write lock); touching an
+			// element without the lock can increment freed memory and lose the count.
+			FReadScopeLock ReadLock(SocketLock);
+			FPlatformAtomics::InterlockedIncrement(&SocketInfosList[Idx].Count);
+		}
 		Mapping[Index] = Idx;
 	}
 
@@ -83,13 +88,13 @@ namespace PCGExStaging
 
 		InputDataFacade = InDataFacade;
 
-		for (const TPair<uint64, int32>& InInfos : InfosKeys)
-		{
-			const FSocketInfos& Infos = SocketInfosList[InInfos.Value];
-			NumOutPoints += Infos.Count * Infos.Sockets.Num();
-		}
-
 		const int32 NumPoints = InDataFacade->GetNum(PCGExData::EIOSide::In);
+
+		// Size the output from the per-point mapping the loops below walk, so the two always agree.
+		for (int i = 0; i < NumPoints; i++)
+		{
+			if (const int32 Idx = Mapping[i]; Idx != -1) { NumOutPoints += SocketInfosList[Idx].Sockets.Num(); }
+		}
 
 		TSharedPtr<PCGExData::FPointIO> SocketIO = InCollection->Emplace_GetRef(InDataFacade->GetIn());
 		SocketIO->IOIndex = InDataFacade->Source->IOIndex;
